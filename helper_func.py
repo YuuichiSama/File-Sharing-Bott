@@ -1,25 +1,38 @@
 import base64
 import re
 import asyncio
-from pyrogram import filters
+from pyrogram import Client, filters
 from pyrogram.enums import ChatMemberStatus
 from config import FORCE_SUB_CHANNEL, ADMINS
 from pyrogram.errors.exceptions.bad_request_400 import UserNotParticipant
 from pyrogram.errors import FloodWait
 
+# Configure logging
+import logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 async def is_subscribed(filter, client, update):
     if not FORCE_SUB_CHANNEL:
+        logger.info("FORCE_SUB_CHANNEL is not set. Skipping subscription check.")
         return True
     user_id = update.from_user.id
     if user_id in ADMINS:
+        logger.info(f"User {user_id} is an admin. Skipping subscription check.")
         return True
     try:
         member = await client.get_chat_member(chat_id=FORCE_SUB_CHANNEL, user_id=user_id)
+        if member.status not in [ChatMemberStatus.OWNER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.MEMBER]:
+            logger.warning(f"User {user_id} is not a valid member of the channel.")
+            return False
+        logger.info(f"User {user_id} is subscribed to the channel.")
+        return True
     except UserNotParticipant:
+        logger.warning(f"User {user_id} is not a participant of the channel.")
         return False
-    if member.status not in [ChatMemberStatus.OWNER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.MEMBER]:
+    except Exception as e:
+        logger.error(f"Error checking subscription for user {user_id}: {e}")
         return False
-    return True
 
 async def encode(string):
     string_bytes = string.encode("ascii")
@@ -28,7 +41,7 @@ async def encode(string):
     return base64_string
 
 async def decode(base64_string):
-    base64_string = base64_string.strip("=")  # Remove padding characters
+    base64_string = base64_string.strip("=")
     base64_bytes = (base64_string + "=" * (-len(base64_string) % 4)).encode("ascii")
     string_bytes = base64.urlsafe_b64decode(base64_bytes)
     string = string_bytes.decode("ascii")
@@ -42,10 +55,11 @@ async def get_messages(client, message_ids):
         try:
             msgs = await client.get_messages(chat_id=client.db_channel.id, message_ids=temp_ids)
         except FloodWait as e:
+            logger.warning(f"FloodWait error: Sleeping for {e.x} seconds.")
             await asyncio.sleep(e.x)
             msgs = await client.get_messages(chat_id=client.db_channel.id, message_ids=temp_ids)
         except Exception as e:
-            print(f"An error occurred: {e}")
+            logger.error(f"Error getting messages: {e}")
             break
         total_messages += len(temp_ids)
         messages.extend(msgs)
@@ -59,7 +73,7 @@ async def get_message_id(client, message):
     elif message.forward_sender_name:
         return 0
     elif message.text:
-        pattern = r'https://t.me/(?:c/)?(\d+)/(\d+)'  # Fixed regex using raw string
+        pattern = r'https://t.me/(?:c/)?(\d+)/(\d+)'
         matches = re.match(pattern, message.text)
         if not matches:
             return 0
@@ -91,3 +105,18 @@ def get_readable_time(seconds: int) -> str:
     return up_time
 
 subscribed = filters.create(is_subscribed)
+
+# Example main function to run the bot
+async def main():
+    app = Client("my_bot")
+    
+    @app.on_message(subscribed)
+    async def handle_message(client, message):
+        logger.info(f"Received message from {message.from_user.id}")
+
+    await app.start()
+    logger.info("Bot started.")
+    await app.idle()
+
+if __name__ == "__main__":
+    asyncio.run(main())
